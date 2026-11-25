@@ -31,7 +31,7 @@ Lancer le serveur:
 python3 -m http.server 7000
 ```
 
-Ouvrir ensuite dans un navigateur l'url: `http://localhost:8000`
+Ouvrir ensuite dans un navigateur l'url: `http://localhost:7000`
 
 ## Sources
 
