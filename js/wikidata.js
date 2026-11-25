@@ -1,4 +1,3 @@
-
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
 
@@ -24,7 +23,9 @@ async function searchGames(searchTerm, signal) {
         );
 
         if (!response.ok) {
-            throw new Error(`Erreur de recherche Wikidata : ${response.status}`);
+            throw new Error(
+                `Erreur de recherche Wikidata : ${response.status}`
+            );
         }
 
         const data = await response.json();
@@ -55,18 +56,166 @@ function getCommonsImageUrl(imageValue) {
     try {
         const url = new URL(imageValue);
 
-        if (url.hostname.includes("wikimedia.org")) {
+        // Une URL directe vers une image Wikimedia.
+        if (url.hostname === "upload.wikimedia.org") {
             return imageValue;
         }
 
-        const filename = decodeURIComponent(
-            imageValue.split("/").pop()
+        if (url.hostname !== "commons.wikimedia.org") {
+            return imageValue;
+        }
+
+        let filename = null;
+
+        // Format Special:FilePath.
+        const specialPrefix = "/wiki/Special:FilePath/";
+        const specialIndex = url.pathname.indexOf(specialPrefix);
+
+        if (specialIndex !== -1) {
+            filename = url.pathname.slice(
+                specialIndex + specialPrefix.length
+            );
+        }
+
+        // Format classique /wiki/File:nom_image.jpg.
+        if (!filename && url.pathname.startsWith("/wiki/File:")) {
+            filename = url.pathname.slice("/wiki/File:".length);
+        }
+
+        if (!filename) {
+            return imageValue;
+        }
+
+        filename = decodeURIComponent(filename);
+
+        return (
+            "https://commons.wikimedia.org/wiki/Special:FilePath/" +
+            encodeURIComponent(filename) +
+            "?width=500"
         );
 
-        return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(filename)}?width=400`;
-    } catch {
+    } catch (error) {
+        console.warn("Impossible de convertir l'image :", error);
         return null;
     }
+}
+
+/**
+ * Récupère l'image principale de la page Wikipédia d'un jeu.
+ *
+ * On privilégie Wikipédia français, puis anglais.
+ * L'image Wikidata P18 reste disponible en secours.
+ */
+async function getGameCoverImage(gameId, fallbackImage, signal) {
+    try {
+        // -----------------------------------------------
+        // 1. Récupération des liens Wikipédia du jeu
+        // -----------------------------------------------
+
+        const entityParams = new URLSearchParams({
+            action: "wbgetentities",
+            ids: gameId,
+            props: "sitelinks",
+            format: "json",
+            origin: "*"
+        });
+
+        const entityResponse = await fetch(
+            `${WIKIDATA_API}?${entityParams}`,
+            { signal }
+        );
+
+        if (!entityResponse.ok) {
+            throw new Error(
+                `Erreur API Wikidata : ${entityResponse.status}`
+            );
+        }
+
+        const entityData = await entityResponse.json();
+        const entity = entityData.entities?.[gameId];
+
+        const sitelinks = entity?.sitelinks || {};
+
+        // Priorité au français, puis à l'anglais.
+        const wikipediaPages = [
+            sitelinks.frwiki,
+            sitelinks.enwiki
+        ].filter(Boolean);
+
+        // -----------------------------------------------
+        // 2. Récupération de l'image principale Wikipédia
+        // -----------------------------------------------
+
+        for (const page of wikipediaPages) {
+            const language = page.site === "frwiki" ? "fr" : "en";
+
+            const wikipediaApi =
+                `https://${language}.wikipedia.org/w/api.php`;
+
+            const params = new URLSearchParams({
+                action: "query",
+                titles: page.title,
+                prop: "pageimages",
+                piprop: "thumbnail",
+                pithumbsize: "500",
+                format: "json",
+                origin: "*"
+            });
+
+            const response = await fetch(
+                `${wikipediaApi}?${params}`,
+                { signal }
+            );
+
+            if (!response.ok) {
+                console.warn(
+                    `Impossible de récupérer l'image Wikipédia (${language})`
+                );
+                continue;
+            }
+
+            const data = await response.json();
+
+            const pages = data.query?.pages || {};
+
+            const wikipediaImage = Object.values(pages)
+                .find((item) => item.thumbnail?.source)
+                ?.thumbnail?.source;
+
+            if (wikipediaImage) {
+                console.info(
+                    `Image du jeu récupérée depuis Wikipédia (${language})`
+                );
+
+                return wikipediaImage;
+            }
+        }
+
+    } catch (error) {
+        // Une annulation de recherche doit être propagée.
+        if (signal?.aborted) {
+            throw error;
+        }
+
+        console.warn(
+            "Impossible de récupérer l'image Wikipédia :",
+            error
+        );
+    }
+
+    // -----------------------------------------------
+    // 3. Solution de secours : image Wikidata P18
+    // -----------------------------------------------
+
+    if (fallbackImage) {
+        console.info("Utilisation de l'image Wikidata P18.");
+
+        return getCommonsImageUrl(fallbackImage);
+    }
+
+    console.warn("Aucune image disponible pour ce jeu.");
+
+    return null;
 }
 
 /**
@@ -139,8 +288,6 @@ async function executeSparql(query, signal) {
 /**
  * Première étape :
  * récupérer les développeurs et l'image du jeu.
- *
- * Cette requête est volontairement très simple.
  */
 function buildDevelopersQuery(gameId) {
     if (!/^Q[1-9]\d*$/.test(gameId)) {
@@ -166,9 +313,6 @@ function buildDevelopersQuery(gameId) {
 /**
  * Deuxième étape :
  * récupérer les localisations des studios.
- *
- * On utilise UNION pour récupérer les différentes
- * propriétés géographiques sans multiplier les OPTIONAL.
  */
 function buildLocationsQuery(studioIds) {
     const values = studioIds
@@ -228,16 +372,11 @@ function buildLocationsQuery(studioIds) {
 /**
  * Récupère les libellés français ou anglais
  * des entités Wikidata.
- *
- * On utilise l'API Wikidata plutôt que le service
- * wikibase:label dans les requêtes SPARQL.
  */
 async function getEntityLabels(entityIds, signal) {
     const uniqueIds = [...new Set(entityIds.filter(Boolean))];
     const labels = {};
 
-    // L'API Wikidata accepte au maximum 50 identifiants
-    // par requête pour les utilisateurs non privilégiés.
     for (let i = 0; i < uniqueIds.length; i += 50) {
         const batch = uniqueIds.slice(i, i + 50);
 
@@ -293,6 +432,7 @@ function getLocationPrecision(item) {
  * pour un jeu donné.
  */
 async function getGameStudios(gameId, signal) {
+
     // -----------------------------------------------
     // ÉTAPE 1 : développeurs du jeu
     // -----------------------------------------------
@@ -306,7 +446,7 @@ async function getGameStudios(gameId, signal) {
 
     const studios = new Map();
 
-    let gameImage = null;
+    let wikidataGameImage = null;
 
     for (const binding of developerBindings) {
         const studioId = getQid(binding.studio?.value);
@@ -326,10 +466,8 @@ async function getGameStudios(gameId, signal) {
             });
         }
 
-        if (binding.gameImage?.value && !gameImage) {
-            gameImage = getCommonsImageUrl(
-                binding.gameImage.value
-            );
+        if (binding.gameImage?.value && !wikidataGameImage) {
+            wikidataGameImage = binding.gameImage.value;
         }
     }
 
@@ -338,7 +476,11 @@ async function getGameStudios(gameId, signal) {
     if (studioIds.length === 0) {
         return {
             studios: [],
-            gameImage
+            gameImage: await getGameCoverImage(
+                gameId,
+                getCommonsImageUrl(wikidataGameImage),
+                signal
+            )
         };
     }
 
@@ -383,8 +525,6 @@ async function getGameStudios(gameId, signal) {
 
         if (!studioId || !studios.has(studioId)) continue;
 
-        const studio = studios.get(studioId);
-
         const locationId = getQid(binding.location?.value);
         const countryId = getQid(binding.country?.value);
 
@@ -398,8 +538,6 @@ async function getGameStudios(gameId, signal) {
 
         const website = binding.website?.value || null;
 
-        // Les doublons sont éliminés en fonction
-        // du studio et de ses coordonnées.
         const uniqueKey = [
             studioId,
             locationId || "",
@@ -434,9 +572,7 @@ async function getGameStudios(gameId, signal) {
         });
     }
 
-    // Si un studio n'a aucune localisation renseignée,
-    // on le conserve pour que l'application puisse
-    // signaler son absence de coordonnées.
+    // Conserver les studios sans localisation renseignée.
     for (const [studioId, studio] of studios) {
         const alreadyPresent = results.some(
             (item) => item.id === studioId
@@ -451,6 +587,16 @@ async function getGameStudios(gameId, signal) {
             });
         }
     }
+
+    // -----------------------------------------------
+    // ÉTAPE 5 : récupérer la jaquette du jeu
+    // -----------------------------------------------
+
+    const gameImage = await getGameCoverImage(
+        gameId,
+        getCommonsImageUrl(wikidataGameImage),
+        signal
+    );
 
     return {
         studios: results,
