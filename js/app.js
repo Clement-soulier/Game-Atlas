@@ -478,18 +478,6 @@ function showStudioDetails(studio) {
             <div class="info-row">
 
                 <span class="info-label">
-                    Localisation
-                </span>
-
-                <span class="info-value">
-                    ${escapeHtml(studio.headquarters || "Non renseignée")}
-                </span>
-
-            </div>
-
-            <div class="info-row">
-
-                <span class="info-label">
                     Pays
                 </span>
 
