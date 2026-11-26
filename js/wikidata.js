@@ -1,18 +1,22 @@
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
 
+
 /**
- * Recherche des entités Wikidata correspondant à un jeu.
+ * Recherche uniquement des jeux vidéo dans Wikidata.
  */
 async function searchGames(searchTerm, signal) {
+
     const search = async (language) => {
+
+        // 1. Recherche des entités correspondant au terme
         const params = new URLSearchParams({
             action: "wbsearchentities",
             search: searchTerm,
             language,
             uselang: language,
             type: "item",
-            limit: "10",
+            limit: "30",
             format: "json",
             origin: "*"
         });
@@ -29,17 +33,61 @@ async function searchGames(searchTerm, signal) {
         }
 
         const data = await response.json();
+        const candidates = data.search || [];
 
-        return (data.search || []).map((item) => ({
-            id: item.id,
-            label: item.label,
-            description: item.description || "",
-            url: item.url
-        }));
+        if (candidates.length === 0) {
+            return [];
+        }
+
+        // 2. Récupération des propriétés P31 des résultats
+        const ids = candidates.map(item => item.id);
+
+        const entityParams = new URLSearchParams({
+            action: "wbgetentities",
+            ids: ids.join("|"),
+            props: "claims",
+            format: "json",
+            origin: "*"
+        });
+
+        const entityResponse = await fetch(
+            `${WIKIDATA_API}?${entityParams}`,
+            { signal }
+        );
+
+        if (!entityResponse.ok) {
+            throw new Error(
+                `Erreur de récupération des entités : ${entityResponse.status}`
+            );
+        }
+
+        const entityData = await entityResponse.json();
+
+        // 3. Conservation uniquement des jeux vidéo
+        return candidates
+            .filter(item => {
+
+                const entity = entityData.entities?.[item.id];
+
+                const instances = entity?.claims?.P31 || [];
+
+                return instances.some(claim =>
+                    claim.mainsnak?.datavalue?.value?.id === "Q7889"
+                );
+
+            })
+            .map(item => ({
+                id: item.id,
+                label: item.label,
+                description: item.description || "",
+                url: item.url
+            }));
     };
 
+    // Recherche en français
     let results = await search("fr");
 
+    // Si aucun jeu n'est trouvé, recherche en anglais
     if (results.length === 0) {
         results = await search("en");
     }
