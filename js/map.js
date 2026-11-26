@@ -33,32 +33,19 @@ const markers = L.featureGroup().addTo(map);
    GAME IMAGE MARKER
 ========================= */
 
-function createGameIcon(imageUrl) {
-
-    const content = imageUrl
-        ? `<img
-                src="${escapeHtml(imageUrl)}"
-                alt=""
-                onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"
-           >
-           <div class="marker-fallback" style="display:none">◈</div>`
-        : `<div class="marker-fallback">◈</div>`;
-
+function createGameIcon(imageUrl, gameName, width = 80, height = 110) {
     return L.divIcon({
-
-        className: "",
-
+        className: "custom-game-marker",
         html: `
-            <div class="game-marker">
-                ${content}
+            <div class="game-marker" style="width:${width}px;height:${height}px">
+                <img src="${imageUrl}" alt="${gameName}">
             </div>
         `,
-
-        iconSize: [54, 72],
-        iconAnchor: [27, 36]
+        iconSize: [width, height],
+        iconAnchor: [width / 2, height],
+        popupAnchor: [0, -height]
     });
 }
-
 
 /* =========================
    ADD STUDIO MARKER
@@ -66,7 +53,16 @@ function createGameIcon(imageUrl) {
 
 function addStudioMarker(studio, gameImage) {
 
-    const icon = createGameIcon(gameImage);
+    const MAX_HEIGHT = 110;
+    const DEFAULT_WIDTH = 80;
+
+    // Création du marqueur avec une taille provisoire
+    const icon = createGameIcon(
+        gameImage,
+        studio.name,
+        DEFAULT_WIDTH,
+        MAX_HEIGHT
+    );
 
     const marker = L.marker(
         [studio.latitude, studio.longitude],
@@ -79,9 +75,31 @@ function addStudioMarker(studio, gameImage) {
         showStudioDetails(studio);
     });
 
+    // Chargement de l'image pour récupérer ses dimensions réelles
+    if (gameImage) {
+        const img = new Image();
+
+        img.onload = () => {
+            const ratio = img.naturalWidth / img.naturalHeight;
+
+            const height = MAX_HEIGHT;
+            const width = height * ratio;
+
+            marker.setIcon(
+                createGameIcon(
+                    gameImage,
+                    studio.name,
+                    width,
+                    height
+                )
+            );
+        };
+
+        img.src = gameImage;
+    }
+
     return marker;
 }
-
 
 /* =========================
    DISPLAY MARKERS
